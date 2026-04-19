@@ -47,7 +47,21 @@ func checkLame(q *queryGroup) bool {
 	}
 	v("checkLame(%q) query result: \n\t%+v", q.Domain, r.String())
 
-	if !StringArrayEquals(q.NS, r.NS) {
+	// report per-server errors and count how many responded cleanly. a
+	// nameserver that didn't respond isn't provably lame — don't flag it as
+	// such, since that conflates transient network failures with misconfiguration
+	responded := 0
+	for nameserver := range r.Results {
+		if r.Results[nameserver].Err != nil {
+			finding("ERROR querying authoritative: %q @%s: %s", r.Domain, nameserver, r.Results[nameserver].Err)
+			continue
+		}
+		responded++
+	}
+
+	// only compare NS sets when at least one server responded, otherwise the
+	// "got 0: []" mismatch is just a restatement of the ERROR findings above
+	if responded > 0 && !StringArrayEquals(q.NS, r.NS) {
 		lame = true
 		finding("unexpected difference in nameservers: domain: %q expected %d: %v, got %d: %v", q.Domain, len(q.NS), q.NS, len(r.NS), r.NS)
 		extra := ExtraStrings(r.NS, q.NS)
@@ -57,8 +71,11 @@ func checkLame(q *queryGroup) bool {
 		}
 	}
 
-	// check that the authoritative bit is set
+	// check that the authoritative bit is set, skipping servers that errored
 	for nameserver := range r.Results {
+		if r.Results[nameserver].Err != nil {
+			continue
+		}
 		if !r.Results[nameserver].Authoritative {
 			lame = true
 			finding("lame delegation: %q is not authoritative for %q", nameserver, r.Domain)
