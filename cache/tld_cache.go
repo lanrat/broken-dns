@@ -52,7 +52,8 @@ func (c *Cache[T]) AddCheck(key string) (AddFunc[T], bool) {
 		return nil, false
 	}
 	// create channel
-	c.locks[key] = make(chan error, 1)
+	ch := make(chan error, 1)
+	c.locks[key] = ch
 	// lock channel
 	// -- (locked/blocked by default)
 	// release channel map mutex
@@ -61,7 +62,7 @@ func (c *Cache[T]) AddCheck(key string) (AddFunc[T], bool) {
 	f := func(value T, err error) error {
 		// check if there was an error
 		if err != nil {
-			c.locks[key] <- err
+			ch <- err
 			// this puts the channel lock in an unrecoverable state if the error if recoverable
 		}
 		// perform add
@@ -69,7 +70,7 @@ func (c *Cache[T]) AddCheck(key string) (AddFunc[T], bool) {
 		c.cache[key] = value
 		c.cm.Unlock()
 		// unlock channel
-		close(c.locks[key])
+		close(ch)
 		return nil
 	}
 	return f, true
@@ -97,13 +98,15 @@ func (c *Cache[T]) Get(key string) (T, bool) {
 // if no other worker is getting the value then it returns an error
 func (c *Cache[T]) GetWait(key string) (T, error) {
 	// get the channel for the key
-	_, ok := c.locks[key]
+	c.lm.Lock()
+	ch, ok := c.locks[key]
+	c.lm.Unlock()
 	var zero T // because we can't return nil with generics
 	if !ok {
 		return zero, fmt.Errorf("key channel does not exist %q", key)
 	}
 	// wait for it to return an error or close
-	err := <-c.locks[key]
+	err := <-ch
 	// return error if error
 	if err != nil {
 		return zero, err
